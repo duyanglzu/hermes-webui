@@ -1,0 +1,13 @@
+name: 定时更新 Fork
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # 每 6 小时运行一次（UTC 时间）
+
+jobs:
+  update-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Shurtu-gal/autoupdate-fork-action@v1
+        with:
+          github_token: ${{ secrets.BOT_TOKEN }}
