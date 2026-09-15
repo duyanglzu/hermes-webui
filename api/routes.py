@@ -13,6 +13,7 @@ import gzip
 import json
 from api.sse_chunked import end_sse_headers
 import logging
+import mimetypes
 import os
 import queue
 import re
@@ -17710,6 +17711,9 @@ _STATIC_MIME = {
     "webp": "image/webp",
     "woff": "font/woff",
     "woff2": "font/woff2",
+    # Python's built-in MIME table does not include APK, and platform MIME
+    # databases are not consistent across Linux, macOS, and Windows.
+    "apk": "application/vnd.android.package-archive",
 }
 # MIME types that are text-based and should carry charset=utf-8
 _TEXT_MIME_TYPES = {"text/css", "application/javascript", "text/html", "image/svg+xml", "text/plain"}
@@ -17741,7 +17745,13 @@ def _serve_static(handler, parsed):
     if not static_file.exists() or not static_file.is_file():
         return j(handler, {"error": "not found"}, status=404)
     ext = static_file.suffix.lower()
-    ct = _STATIC_MIME.get(ext.lstrip("."), "text/plain")
+    ct = _STATIC_MIME.get(ext.lstrip("."))
+    if ct is None:
+        guessed_type, content_encoding = mimetypes.guess_type(static_file.name)
+        # Encoded suffixes (for example .svgz/.tgz) need Content-Encoding
+        # semantics this route does not implement. Fail closed instead of
+        # advertising the decoded media type for still-compressed bytes.
+        ct = guessed_type if guessed_type and not content_encoding else "application/octet-stream"
     ct_header = f"{ct}; charset=utf-8" if ct in _TEXT_MIME_TYPES else ct
 
     # Look up or populate the per-file cache (raw, optional gzip, ETag).
@@ -24707,10 +24717,23 @@ def _handle_cron_create(handler, body):
 
 def _handle_cron_delivery_options(handler):
     """Return available delivery platforms for cron jobs."""
-    try:
-        from cron.scheduler import _KNOWN_DELIVERY_PLATFORMS
-    except Exception:
-        _KNOWN_DELIVERY_PLATFORMS = frozenset()
+    # The Agent moved this authority from ``cron.scheduler`` to
+    # ``cron.scheduler_delivery``. Try the current location first and fall back
+    # to the legacy one so the picker keeps working across Agent versions.
+    # Without the fallback chain a bare ImportError silently degraded this
+    # endpoint to local/origin only, dropping every messaging platform from the
+    # cron delivery picker (telegram, discord, slack, feishu, ...).
+    _KNOWN_DELIVERY_PLATFORMS = frozenset()
+    import importlib
+    for _module_name in ("cron.scheduler_delivery", "cron.scheduler"):
+        try:
+            _mod = importlib.import_module(_module_name)
+        except Exception:
+            continue
+        _known = getattr(_mod, "_KNOWN_DELIVERY_PLATFORMS", None)
+        if _known:
+            _KNOWN_DELIVERY_PLATFORMS = frozenset(_known)
+            break
     platforms = [
         {"value": "local", "label": "Local (save output only)"},
         {"value": "origin", "label": "Origin (reply to creator)"}
